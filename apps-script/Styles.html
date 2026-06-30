@@ -142,8 +142,8 @@
   .mathexpr { text-align: center; font-size: 2rem; font-weight: 800; letter-spacing: .04em; color: var(--ink); font-variant-numeric: tabular-nums; padding: 8px 0; }
 
   /* Velocidad: símbolos */
-  .speed-model { display: flex; justify-content: center; margin: 6px 0 16px; }
-  .speed-model svg { background: #0f141c; border: 2px solid var(--brand); border-radius: 12px; padding: 6px; }
+  .speed-model { display: flex; flex-direction: column; align-items: center; margin: 6px 0 16px; }
+  .speed-model svg { width: 84px; height: 84px; background: #0f141c; border: 2px solid var(--brand); border-radius: 12px; padding: 6px; }
   .glyph-row { display: flex; gap: 6px; justify-content: center; align-items: center; background: #0f141c; border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
   .glyph-row svg { background: transparent; border: none; }
   .vs { text-align: center; color: var(--muted); font-weight: 700; margin: 8px 0; letter-spacing: .1em; }
@@ -163,6 +163,17 @@
   .corsi-cell.flash { background: var(--brand); border-color: var(--brand); transform: scale(1.05); }
   .corsi-cell.picked { background: rgba(124,92,255,.3); border-color: var(--brand-2); color: var(--ink); }
   .digit-display { font-size: 2.6rem; font-weight: 800; letter-spacing: .15em; text-align: center; min-height: 3.4rem; margin: 18px 0; color: var(--brand); font-variant-numeric: tabular-nums; }
+
+  /* Cuenta atrás de preparación */
+  .countdown { text-align: center; padding: 34px 0 26px; }
+  .cd-label { color: var(--ink-soft); font-size: .95rem; letter-spacing: .14em; text-transform: uppercase; }
+  .cd-num { font-size: 4.4rem; font-weight: 800; color: var(--brand); margin-top: 8px; line-height: 1; }
+  .cd-num.pop { animation: cdpop .45s ease; }
+  @keyframes cdpop { 0% { transform: scale(.5); opacity: .2; } 55% { transform: scale(1.18); opacity: 1; } 100% { transform: scale(1); } }
+  #pill-timer { font-size: .95rem; padding: 8px 16px; }
+  #pill-timer.low { border-color: var(--bad); color: var(--bad); animation: tpulse .5s ease-in-out infinite; }
+  #pill-timer.low b { color: var(--bad); }
+  @keyframes tpulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.08); } }
   .keypad { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; max-width: 460px; margin: 0 auto; }
   .key { background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px 0; font-size: 1.2rem; font-weight: 700; cursor: pointer; color: var(--ink); }
   .key:hover { border-color: var(--brand); }

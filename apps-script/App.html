@@ -94,21 +94,44 @@
     var head = '<div class="q-stem">' + item.stem + '</div>' +
                (item.hint ? '<div class="q-hint" id="q-hint">' + item.hint + '</div>' : '<div class="q-hint" id="q-hint"></div>');
 
-    if (item.mode === 'choice' || item.mode === 'speed-choice') {
+    if (item.mode === 'choice') {
       var fig = item.figureHtml ? '<div class="q-figure">' + item.figureHtml + '</div>' : '';
       area.innerHTML = head + fig + renderOptions(item);
       App.phase = 'answer'; App.qStart = Date.now();
-      if (item.mode === 'speed-choice' && item.timeLimitMs) {
-        startTimer(item.timeLimitMs, function () { recordAndNext(false, -1); });
-      }
+    } else if (item.mode === 'speed-choice') {
+      // Fase de lectura/preparación: el cronómetro NO corre todavía.
+      area.innerHTML = head + '<div id="stim"></div>';
+      App.phase = 'present';
+      runCountdown(qs('#stim'), function () {
+        var fig = item.figureHtml ? '<div class="q-figure">' + item.figureHtml + '</div>' : '';
+        qs('#stim').innerHTML = fig + renderOptions(item);
+        App.phase = 'answer'; App.qStart = Date.now();
+        if (item.timeLimitMs) startTimer(item.timeLimitMs, function () { recordAndNext(false, -1); });
+      });
     } else if (item.mode === 'digitspan') {
-      area.innerHTML = head + '<div class="digit-display" id="digit">Prepárate…</div><div id="kp"></div>';
-      playDigits(item);
+      area.innerHTML = head + '<div class="digit-display" id="digit"></div><div id="kp"></div>';
+      App.phase = 'present';
+      runCountdown(qs('#digit'), function () { playDigits(item); });
     } else if (item.mode === 'corsi') {
-      area.innerHTML = head + renderCorsiGrid(item) +
+      area.innerHTML = head + '<div id="cdhost"></div>' + renderCorsiGrid(item) +
         '<div style="text-align:center;margin-top:10px"><button class="btn-ghost corsi-reset" type="button">Reiniciar selección</button></div>';
-      playCorsi(item);
+      App.phase = 'present';
+      runCountdown(qs('#cdhost'), function () { qs('#cdhost').innerHTML = ''; playCorsi(item); });
     }
+  }
+
+  // Cuenta atrás "Prepárate… 3·2·1" antes de los ítems cronometrados o de memoria.
+  function runCountdown(host, cb) {
+    var n = 3;
+    host.innerHTML = '<div class="countdown"><div class="cd-label">Prepárate…</div><div class="cd-num" id="cdnum">' + n + '</div></div>';
+    var el = qs('#cdnum');
+    if (App.cdInterval) clearInterval(App.cdInterval);
+    App.cdInterval = setInterval(function () {
+      n--;
+      if (n <= 0) { clearInterval(App.cdInterval); App.cdInterval = null; cb(); return; }
+      el.textContent = n;
+      el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+    }, 850);
   }
 
   function renderOptions(item) {
@@ -150,10 +173,11 @@
   function playDigits(item) {
     var seq = item.memory.sequence, i = 0, disp = qs('#digit');
     App.phase = 'present';
+    setHint('Observa los dígitos…');
     function step() {
       if (i < seq.length) {
         disp.textContent = seq[i];
-        setTimeout(function () { disp.textContent = ''; i++; setTimeout(step, 230); }, 770);
+        setTimeout(function () { disp.textContent = ''; i++; setTimeout(step, 300); }, 850);
       } else {
         disp.textContent = '↺';
         showKeypad(item);
@@ -161,7 +185,7 @@
         App.phase = 'answer'; App.qStart = Date.now();
       }
     }
-    setTimeout(step, 700);
+    step();
   }
   function showKeypad(item) {
     var html = '<div class="answer-box" id="answerbox">_</div><div class="keypad">';
@@ -186,17 +210,18 @@
   function playCorsi(item) {
     var seq = item.memory.sequence, cells = qsa('.corsi-cell'), i = 0;
     App.corsiInput = false; App.picked = []; App.phase = 'present';
+    setHint('Observa la secuencia…');
     function step() {
       if (i < seq.length) {
         var idx = seq[i];
         cells[idx].classList.add('flash');
-        setTimeout(function () { cells[idx].classList.remove('flash'); i++; setTimeout(step, 250); }, 620);
+        setTimeout(function () { cells[idx].classList.remove('flash'); i++; setTimeout(step, 300); }, 680);
       } else {
         App.corsiInput = true; App.phase = 'answer'; App.qStart = Date.now();
         setHint('Ahora tócalas en orden INVERSO al que se iluminaron.');
       }
     }
-    setTimeout(step, 650);
+    step();
   }
   function onCorsiPick(idx, cell) {
     if (App.picked.indexOf(idx) !== -1) return;
@@ -243,12 +268,14 @@
     App.timerInt = setInterval(function () {
       var rem = Math.max(0, end - Date.now());
       qs('#timer-val').textContent = (rem / 1000).toFixed(1);
+      pill.classList.toggle('low', rem < 2000);
       if (rem <= 0) { clearTimers(); onExpire(); }
     }, 100);
   }
   function clearTimers() {
     if (App.timerInt) { clearInterval(App.timerInt); App.timerInt = null; }
-    var pill = qs('#pill-timer'); if (pill) pill.hidden = true;
+    if (App.cdInterval) { clearInterval(App.cdInterval); App.cdInterval = null; }
+    var pill = qs('#pill-timer'); if (pill) { pill.hidden = true; pill.classList.remove('low'); }
   }
 
   // =========================================================================
@@ -439,7 +466,8 @@
       '<p><b>Marco teórico:</b> el test sigue la teoría <b>Cattell–Horn–Carroll (CHC)</b>, evaluando cinco capacidades amplias del Estrato II ' +
       '(Gf, Gc, Gwm, Gs, Gv) que convergen en el factor general <em>g</em> (Estrato III).</p>' +
       '<p><b>Puntuación:</b> cada ítem tiene parámetros de la <b>Teoría de Respuesta al Ítem</b> (modelo 3PL: dificultad <i>b</i>, ' +
-      'discriminación <i>a</i> y azar <i>c</i>). La habilidad θ se estima por <b>EAP</b> (media a posteriori, prior normal). ' +
+      'discriminación <i>a</i> y azar <i>c</i>). La habilidad θ se estima por <b>EAP</b> (media a posteriori, prior normal) ' +
+      'con <b>corrección del encogimiento</b> bayesiano (se divide por la fiabilidad ρ ≈ 1 − EE²) para que la escala no quede comprimida. ' +
       'La fiabilidad mostrada es 1 − EE².</p>' +
       '<p><b>Adaptativo (CAT):</b> ' + (r.adaptive ? 'la dificultad de cada ítem se ajustó a tu nivel estimado, equilibrando los cinco dominios.' :
         'modo lineal (dificultad media fija).') + '</p>' +

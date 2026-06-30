@@ -341,11 +341,13 @@
   //  Gs — VELOCIDAD DE PROCESAMIENTO (cronometrado)
   // ======================================================================
   function glyphSVG(g, size) {
-    return svg(size || 60, size || 60, drawShape(g.shape, 30, 30, 18, g.color));
+    size = size || 60;
+    var c = size / 2, r = size * 0.3;
+    return svg(size, size, drawShape(g.shape, c, c, r, g.color));
   }
   function genSpeedMatch(targetB) {
     var N = targetB < -0.3 ? 4 : (targetB < 0.7 ? 5 : 6);
-    var deadline = targetB < -0.3 ? 7000 : (targetB < 0.7 ? 5000 : (targetB < 1.4 ? 3800 : 2800));
+    var deadline = targetB < -0.3 ? 9000 : (targetB < 0.7 ? 7500 : (targetB < 1.4 ? 6000 : 5000));
     var target = { shape: pick(SHAPES), color: pick(COLORS) };
     var opts = [{ g: target, correct: true }];
     var usedSig = { }; usedSig[target.shape + target.color] = 1;
@@ -358,16 +360,16 @@
       id: uid('gs_m'), domain: 'Gs', type: 'speed-match', mode: 'speed-choice',
       a: 0.95, b: clamp(targetB, -1.0, 1.8), c: 1 / N, optionCols: N <= 4 ? 4 : 3,
       timeLimitMs: deadline,
-      stem: '¡Rápido! Marca el símbolo idéntico al modelo:',
-      hint: 'Tienes pocos segundos. Si se acaba el tiempo, cuenta como fallo.',
-      figureHtml: '<div class="speed-model">' + glyphSVG(target, 72) + '</div>',
+      stem: 'Marca el símbolo idéntico al modelo:',
+      hint: 'Tras la cuenta atrás aparecerán las opciones y un cronómetro. Responde lo más rápido que puedas.',
+      figureHtml: '<div class="speed-model"><span class="rot-label">Modelo</span>' + glyphSVG(target, 84) + '</div>',
       explanation: 'El modelo era ' + target.shape + ' de color indicado; solo una opción coincide exactamente en forma y color. Esta prueba mide la rapidez para procesar información visual simple bajo presión de tiempo.'
     };
     return makeChoice(item, opts);
   }
   function genSpeedCompare(targetB) {
     var L = targetB < 0 ? 5 : (targetB < 0.9 ? 6 : 7);
-    var deadline = targetB < 0 ? 6000 : (targetB < 0.9 ? 4500 : 3200);
+    var deadline = targetB < 0 ? 8000 : (targetB < 0.9 ? 6500 : 5500);
     function rowGlyphs() { var a = []; for (var i = 0; i < L; i++) a.push({ shape: pick(SHAPES), color: pick(COLORS) }); return a; }
     var rowA = rowGlyphs();
     var same = Math.random() < 0.5;
@@ -383,7 +385,7 @@
       a: 0.9, b: clamp(targetB, -1.0, 1.6), c: 0.5, optionCols: 2,
       timeLimitMs: deadline,
       stem: '¿Las dos filas son exactamente iguales?',
-      hint: 'Compara símbolo por símbolo lo más rápido que puedas.',
+      hint: 'Tras la cuenta atrás verás las dos filas y un cronómetro. Compáralas símbolo por símbolo.',
       figureHtml: rowHtml(rowA) + '<div class="vs">vs</div>' + rowHtml(rowB),
       explanation: same ? 'Ambas filas eran idénticas símbolo por símbolo.' : 'Las filas diferían en un símbolo. Detectar diferencias con rapidez es una medida de velocidad de procesamiento perceptivo.'
     };

@@ -58,6 +58,13 @@
     return { theta: mean, se: Math.sqrt(varSum / den) };
   }
 
+  // Corrección de encogimiento del EAP. El estimador bayesiano se contrae hacia
+  // el prior (la media), comprimiendo la escala (~0.91). Dividir por la fiabilidad
+  // ρ ≈ información/(información+1) ≈ 1 − EE² devuelve un estimador casi insesgado.
+  // Se acota ρ para no inflar el ruido en subpruebas cortas (dominios).
+  function reliability(se) { return Math.max(0.85, Math.min(0.98, 1 - se * se)); }
+  function deshrink(theta, se) { return theta / reliability(se); }
+
   // --------------------------------------------------------- Normas por edad
   // Media poblacional esperada de θ (referencia: adulto joven en plenitud ≈ 0).
   var AGE_ANCHORS = [6, 10, 14, 18, 22, 30, 40, 50, 60, 70, 80, 90];
@@ -201,7 +208,7 @@
     var domains = {};
     DOMAINS.forEach(function (d) {
       var est = byDomain[d].length ? eap(byDomain[d]) : { theta: 0, se: 1 };
-      var normed = est.theta - ageExpectedMean(age, d);
+      var normed = deshrink(est.theta, est.se) - ageExpectedMean(age, d);
       var index = Math.round(100 + 15 * normed);
       index = Math.max(40, Math.min(160, index));
       domains[d] = {
@@ -217,12 +224,13 @@
       };
     });
 
-    // Global: EAP sobre todos los ítems, normado por la media de edad promedio.
+    // Global: EAP sobre todos los ítems, des-encogido y normado por la media de edad.
     var overall = eap(state.responses);
-    var normedOverall = overall.theta - ageExpectedOverall(age);
+    var rhoOverall = reliability(overall.se);
+    var normedOverall = overall.theta / rhoOverall - ageExpectedOverall(age);
     var iq = Math.round(100 + 15 * normedOverall);
     iq = Math.max(40, Math.min(160, iq));
-    var seIQ = 15 * overall.se;
+    var seIQ = 15 * overall.se / rhoOverall;
     var ciLow = Math.round(iq - 1.96 * seIQ);
     var ciHigh = Math.round(iq + 1.96 * seIQ);
     var percentile = round1(percentileFromIQ(iq));
