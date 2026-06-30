@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <div id="app">
+
+    <!-- ====================== PANTALLA: BIENVENIDA ====================== -->
+    <section id="screen-welcome" class="screen active">
+      <div class="card hero">
+        <div class="brand">
+          <div class="brand-mark">CHC</div>
+          <div>
+            <h1>Test de Inteligencia</h1>
+            <p class="subtitle">Evaluación adaptativa basada en la teoría Cattell–Horn–Carroll</p>
+          </div>
+        </div>
+
+        <p class="lead">
+          Mide cinco capacidades cognitivas amplias que convergen en el factor general
+          de inteligencia (<em>g</em>), con puntuación psicométrica (IRT&nbsp;3PL),
+          dificultad adaptativa (CAT) y normas por edad. Resultado en escala CI
+          (media&nbsp;100, desviación&nbsp;15).
+        </p>
+
+        <div class="domain-grid">
+          <div class="domain-chip" data-d="Gf"><b>Gf</b><span>Razonamiento fluido</span></div>
+          <div class="domain-chip" data-d="Gc"><b>Gc</b><span>Conocimiento cristalizado</span></div>
+          <div class="domain-chip" data-d="Gwm"><b>Gwm</b><span>Memoria de trabajo</span></div>
+          <div class="domain-chip" data-d="Gs"><b>Gs</b><span>Velocidad de procesamiento</span></div>
+          <div class="domain-chip" data-d="Gv"><b>Gv</b><span>Procesamiento visoespacial</span></div>
+        </div>
+
+        <form id="form-profile" autocomplete="off">
+          <h2>Tus datos</h2>
+          <div class="form-row">
+            <label>Nombre
+              <input type="text" id="in-name" required maxlength="60" placeholder="Tu nombre">
+            </label>
+            <label>Edad
+              <input type="number" id="in-age" required min="6" max="100" placeholder="Años">
+            </label>
+            <label>Género
+              <select id="in-gender" required>
+                <option value="" disabled selected>Selecciona…</option>
+                <option value="Femenino">Femenino</option>
+                <option value="Masculino">Masculino</option>
+                <option value="No binario">No binario</option>
+                <option value="Prefiero no decir">Prefiero no decir</option>
+              </select>
+            </label>
+          </div>
+          <p class="age-note" id="age-note"></p>
+
+          <div class="settings-row">
+            <label class="check">
+              <input type="checkbox" id="opt-adaptive" checked>
+              Modo adaptativo (CAT) — recomendado
+            </label>
+            <label class="check">
+              Longitud:
+              <select id="opt-length">
+                <option value="short">Corta (~20 ítems)</option>
+                <option value="standard" selected>Estándar (~30 ítems)</option>
+                <option value="full">Completa (~40 ítems)</option>
+              </select>
+            </label>
+          </div>
+
+          <button type="submit" class="btn-primary btn-lg">Comenzar el test ▸</button>
+          <p class="disclaimer">
+            Herramienta educativa y de autoconocimiento. No sustituye una evaluación
+            clínica realizada por un profesional con instrumentos estandarizados.
+          </p>
+        </form>
+      </div>
+    </section>
+
+    <!-- ====================== PANTALLA: TEST ====================== -->
+    <section id="screen-test" class="screen">
+      <div class="card test-card">
+        <header class="test-header">
+          <div class="progress">
+            <div class="progress-bar"><div id="progress-fill"></div></div>
+            <span id="progress-label">Ítem 1</span>
+          </div>
+          <div class="meta-pills">
+            <span class="pill" id="pill-domain">Dominio</span>
+            <span class="pill" id="pill-timer" hidden>⏱ <b id="timer-val">0</b>s</span>
+          </div>
+        </header>
+
+        <div id="question-area"><!-- inyectado por JS --></div>
+
+        <footer class="test-footer">
+          <div id="memory-controls"></div>
+          <button id="btn-next" class="btn-primary" disabled>Confirmar respuesta ▸</button>
+        </footer>
+      </div>
+    </section>
+
+    <!-- ====================== PANTALLA: PROCESANDO ====================== -->
+    <section id="screen-loading" class="screen">
+      <div class="card center">
+        <div class="spinner"></div>
+        <h2>Calculando tu perfil cognitivo…</h2>
+        <p class="muted">Estimando θ por máxima verosimilitud, normalizando por edad
+          y convirtiendo a escala CI.</p>
+      </div>
+    </section>
+
+    <!-- ====================== PANTALLA: RESULTADOS ====================== -->
+    <section id="screen-results" class="screen">
+      <div id="results-area"><!-- inyectado por JS --></div>
+    </section>
+
+  </div>
+
+  <?!= include('ItemBank'); ?>
+  <?!= include('Engine'); ?>
+  <?!= include('App'); ?>
+</body>
+</html>
