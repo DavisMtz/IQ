@@ -1,0 +1,482 @@
+<script>
+/**
+ * CONTROLADOR DE LA APLICACIÓN (cliente)
+ * Orquesta el flujo del test adaptativo, renderiza cada tipo de ítem
+ * (incluidas las tareas cronometradas y de memoria), construye el informe
+ * con gráficos SVG y guarda el resultado en Google Sheets.
+ */
+(function () {
+  'use strict';
+
+  var DCOL = { Gf: '#5b8cff', Gc: '#34d399', Gwm: '#fbbf24', Gs: '#f472b6', Gv: '#7c5cff' };
+  var DOMAINS = ['Gf', 'Gc', 'Gwm', 'Gs', 'Gv'];
+
+  var App = {
+    profile: null, session: null, currentItem: null,
+    selected: -1, typed: '', picked: [], corsiInput: false,
+    phase: 'idle', qStart: 0, timerInt: null, estTotal: 30, result: null
+  };
+
+  // ----------------------------------------------------------- utilidades DOM
+  function qs(s, r) { return (r || document).querySelector(s); }
+  function qsa(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+  function showScreen(id) {
+    qsa('.screen').forEach(function (s) { s.classList.remove('active'); });
+    qs('#' + id).classList.add('active');
+    window.scrollTo(0, 0);
+  }
+  function arraysEqual(a, b) { return a.length === b.length && a.every(function (v, i) { return v === b[i]; }); }
+  function deg2rad(d) { return d * Math.PI / 180; }
+  function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+
+  // =========================================================================
+  //  INICIO
+  // =========================================================================
+  document.addEventListener('DOMContentLoaded', function () {
+    qs('#form-profile').addEventListener('submit', onStart);
+    qs('#in-age').addEventListener('input', onAgeChange);
+    qs('#btn-next').addEventListener('click', onConfirm);
+    qs('#question-area').addEventListener('click', onAreaClick);
+  });
+
+  function onAgeChange() {
+    var age = Number(qs('#in-age').value);
+    var note = qs('#age-note');
+    if (!age) { note.textContent = ''; return; }
+    var grp = age < 16 ? 'niños/adolescentes' : age < 35 ? 'adultos jóvenes' : age < 60 ? 'adultos' : 'adultos mayores';
+    note.textContent = 'Tus resultados se compararán con las normas de tu grupo de edad (' + grp + ').';
+  }
+
+  function onStart(e) {
+    e.preventDefault();
+    var name = qs('#in-name').value.trim();
+    var age = Number(qs('#in-age').value);
+    var gender = qs('#in-gender').value;
+    if (!name || !age || !gender) return;
+    App.profile = { name: name, age: age, gender: gender };
+    var length = qs('#opt-length').value;
+    var adaptive = qs('#opt-adaptive').checked;
+    App.session = window.ENGINE.createSession({ length: length, adaptive: adaptive });
+    var cfg = App.session.state.cfg;
+    App.estTotal = adaptive ? Math.round((cfg.minItems + cfg.maxItems) / 2) : cfg.minItems;
+    showScreen('screen-test');
+    loadNext();
+  }
+
+  // =========================================================================
+  //  FLUJO DEL TEST
+  // =========================================================================
+  function loadNext() {
+    if (App.session.done()) { finishTest(); return; }
+    var item = App.session.nextItem();
+    App.currentItem = item;
+    App.selected = -1; App.typed = ''; App.picked = []; App.corsiInput = false;
+    renderItem(item);
+    updateProgress();
+  }
+
+  function updateProgress() {
+    var n = App.session.progress().n + 1;
+    var pct = clamp(n / App.estTotal * 100, 4, 100);
+    qs('#progress-fill').style.width = pct + '%';
+    qs('#progress-label').textContent = 'Ítem ' + n + ' (aprox. ' + App.estTotal + ')';
+    var pill = qs('#pill-domain');
+    pill.textContent = window.ENGINE.DOMAIN_NAMES[App.currentItem.domain];
+    pill.style.borderColor = DCOL[App.currentItem.domain];
+    pill.style.color = DCOL[App.currentItem.domain];
+  }
+
+  function renderItem(item) {
+    clearTimers();
+    disableNext();
+    qs('#btn-next').textContent = 'Confirmar respuesta ▸';
+    var area = qs('#question-area');
+    var head = '<div class="q-stem">' + item.stem + '</div>' +
+               (item.hint ? '<div class="q-hint" id="q-hint">' + item.hint + '</div>' : '<div class="q-hint" id="q-hint"></div>');
+
+    if (item.mode === 'choice' || item.mode === 'speed-choice') {
+      var fig = item.figureHtml ? '<div class="q-figure">' + item.figureHtml + '</div>' : '';
+      area.innerHTML = head + fig + renderOptions(item);
+      App.phase = 'answer'; App.qStart = Date.now();
+      if (item.mode === 'speed-choice' && item.timeLimitMs) {
+        startTimer(item.timeLimitMs, function () { recordAndNext(false, -1); });
+      }
+    } else if (item.mode === 'digitspan') {
+      area.innerHTML = head + '<div class="digit-display" id="digit">Prepárate…</div><div id="kp"></div>';
+      playDigits(item);
+    } else if (item.mode === 'corsi') {
+      area.innerHTML = head + renderCorsiGrid(item) +
+        '<div style="text-align:center;margin-top:10px"><button class="btn-ghost corsi-reset" type="button">Reiniciar selección</button></div>';
+      playCorsi(item);
+    }
+  }
+
+  function renderOptions(item) {
+    var cls = 'options cols-' + (item.optionCols || 4);
+    var html = '<div class="' + cls + '" id="opts">';
+    item.options.forEach(function (o, i) { html += '<div class="option" data-i="' + i + '">' + o.html + '</div>'; });
+    return html + '</div>';
+  }
+  function renderCorsiGrid(item) {
+    var n = item.memory.gridN, total = n * n, html = '<div class="corsi-grid" style="grid-template-columns:repeat(' + n + ',auto)">';
+    for (var i = 0; i < total; i++) html += '<div class="corsi-cell" data-idx="' + i + '"></div>';
+    return html + '</div>';
+  }
+
+  // -------------------------------------------------------- selección/clicks
+  function onAreaClick(e) {
+    var opt = e.target.closest('.option');
+    if (opt && App.phase === 'answer') { onSelectOption(Number(opt.dataset.i)); return; }
+    var cell = e.target.closest('.corsi-cell');
+    if (cell && App.corsiInput) { onCorsiPick(Number(cell.dataset.idx), cell); return; }
+    var key = e.target.closest('.key');
+    if (key) { onKey(key.dataset.k); return; }
+    if (e.target.closest('.corsi-reset')) { resetCorsi(); return; }
+  }
+
+  function onSelectOption(i) {
+    var item = App.currentItem;
+    if (item.mode === 'speed-choice') {
+      clearTimers();
+      recordAndNext(i === item.correctIndex, i);
+      return;
+    }
+    App.selected = i;
+    qsa('.option').forEach(function (o) { o.classList.toggle('selected', Number(o.dataset.i) === i); });
+    enableNext();
+  }
+
+  // ----------------------------------------------------------- memoria: dígitos
+  function playDigits(item) {
+    var seq = item.memory.sequence, i = 0, disp = qs('#digit');
+    App.phase = 'present';
+    function step() {
+      if (i < seq.length) {
+        disp.textContent = seq[i];
+        setTimeout(function () { disp.textContent = ''; i++; setTimeout(step, 230); }, 770);
+      } else {
+        disp.textContent = '↺';
+        showKeypad(item);
+        setHint('Escribe los ' + seq.length + ' dígitos en orden INVERSO.');
+        App.phase = 'answer'; App.qStart = Date.now();
+      }
+    }
+    setTimeout(step, 700);
+  }
+  function showKeypad(item) {
+    var html = '<div class="answer-box" id="answerbox">_</div><div class="keypad">';
+    for (var d = 1; d <= 9; d++) html += '<button type="button" class="key" data-k="' + d + '">' + d + '</button>';
+    html += '<button type="button" class="key" data-k="0">0</button>';
+    html += '<button type="button" class="key wide" data-k="del">⌫ Borrar</button>';
+    html += '<button type="button" class="key wide" data-k="clr">Limpiar</button>';
+    html += '</div>';
+    qs('#kp').innerHTML = html;
+  }
+  function onKey(k) {
+    var item = App.currentItem;
+    if (k === 'del') App.typed = App.typed.slice(0, -1);
+    else if (k === 'clr') App.typed = '';
+    else if (App.typed.length < item.memory.length) App.typed += k;
+    var box = qs('#answerbox');
+    if (box) box.textContent = App.typed || '_';
+    if (App.typed.length > 0) enableNext(); else disableNext();
+  }
+
+  // ----------------------------------------------------------- memoria: Corsi
+  function playCorsi(item) {
+    var seq = item.memory.sequence, cells = qsa('.corsi-cell'), i = 0;
+    App.corsiInput = false; App.picked = []; App.phase = 'present';
+    function step() {
+      if (i < seq.length) {
+        var idx = seq[i];
+        cells[idx].classList.add('flash');
+        setTimeout(function () { cells[idx].classList.remove('flash'); i++; setTimeout(step, 250); }, 620);
+      } else {
+        App.corsiInput = true; App.phase = 'answer'; App.qStart = Date.now();
+        setHint('Ahora tócalas en orden INVERSO al que se iluminaron.');
+      }
+    }
+    setTimeout(step, 650);
+  }
+  function onCorsiPick(idx, cell) {
+    if (App.picked.indexOf(idx) !== -1) return;
+    App.picked.push(idx);
+    cell.classList.add('picked');
+    cell.textContent = App.picked.length;
+    if (App.picked.length >= 1) enableNext();
+  }
+  function resetCorsi() {
+    App.picked = [];
+    qsa('.corsi-cell').forEach(function (c) { c.classList.remove('picked'); c.textContent = ''; });
+    disableNext();
+  }
+
+  // ------------------------------------------------------------- confirmar
+  function onConfirm() {
+    var item = App.currentItem;
+    if (!item) return;
+    if (item.mode === 'choice') {
+      if (App.selected < 0) return;
+      recordAndNext(App.selected === item.correctIndex, App.selected);
+    } else if (item.mode === 'digitspan') {
+      recordAndNext(App.typed === item.answer, App.typed);
+    } else if (item.mode === 'corsi') {
+      recordAndNext(arraysEqual(App.picked, item.answer), App.picked.slice());
+    }
+  }
+  function recordAndNext(correct, chosen) {
+    clearTimers();
+    var timeMs = Date.now() - App.qStart;
+    App.session.submit({ correct: correct, timeMs: timeMs, chosen: chosen });
+    loadNext();
+  }
+
+  function enableNext() { qs('#btn-next').disabled = false; }
+  function disableNext() { qs('#btn-next').disabled = true; }
+  function setHint(t) { var h = qs('#q-hint'); if (h) h.textContent = t; }
+
+  // ----------------------------------------------------------------- timer
+  function startTimer(ms, onExpire) {
+    clearTimers();
+    var pill = qs('#pill-timer'); pill.hidden = false;
+    var end = Date.now() + ms;
+    App.timerInt = setInterval(function () {
+      var rem = Math.max(0, end - Date.now());
+      qs('#timer-val').textContent = (rem / 1000).toFixed(1);
+      if (rem <= 0) { clearTimers(); onExpire(); }
+    }, 100);
+  }
+  function clearTimers() {
+    if (App.timerInt) { clearInterval(App.timerInt); App.timerInt = null; }
+    var pill = qs('#pill-timer'); if (pill) pill.hidden = true;
+  }
+
+  // =========================================================================
+  //  FINAL Y RESULTADOS
+  // =========================================================================
+  function finishTest() {
+    clearTimers();
+    showScreen('screen-loading');
+    setTimeout(function () {
+      var result = App.session.finalize(App.profile);
+      App.result = result;
+      renderResults(result);
+      showScreen('screen-results');
+      persist(result);
+    }, 700);
+  }
+
+  function renderResults(r) {
+    var area = qs('#results-area');
+    var html = '';
+
+    // Héroe
+    html += '<div class="card result-hero">';
+    html += '<div class="iq-label">Coeficiente intelectual estimado</div>';
+    html += '<div class="iq-number">' + r.iq + '</div>';
+    html += '<div class="iq-ci">Intervalo de confianza 95%: ' + r.ciLow + ' – ' + r.ciHigh + '</div>';
+    html += '<div class="classification">' + r.classification + '</div>';
+    html += '<div class="stat-row">';
+    html += stat('Percentil', r.percentile);
+    html += stat('Ítems', r.itemsAdministered);
+    html += stat('Tiempo', r.totalTimeSec + 's');
+    html += stat('Fiabilidad', rxx(r.se));
+    html += '</div></div>';
+
+    // Curva normal + radar
+    html += '<div class="grid-2">';
+    html += '<div class="panel"><h3>Tu posición en la curva normal</h3>' + bellCurveSVG(r.iq, r.percentile) + '</div>';
+    html += '<div class="panel"><h3>Perfil cognitivo (5 dominios CHC)</h3>' + radarSVG(r.domains) + '</div>';
+    html += '</div>';
+
+    // Barras por dominio
+    html += '<div class="panel" style="margin-top:16px"><h3>Índices por dominio (media 100, DE 15)</h3>';
+    DOMAINS.forEach(function (d) { html += domainBar(d, r.domains[d]); });
+    html += '<p class="section-sub" style="margin-top:10px">La línea central marca el promedio poblacional (100) de tu grupo de edad.</p></div>';
+
+    // Interpretación
+    html += '<h2 class="section-title">Interpretación de resultados</h2>';
+    html += '<div class="panel">';
+    r.narrative.forEach(function (p) { html += '<p style="margin:0 0 12px">' + p + '</p>'; });
+    html += '<div class="lists">';
+    html += '<div><h3 class="tag-strength">Fortalezas</h3><ul>';
+    html += (r.strengths.length ? r.strengths.map(function (d) {
+      return '<li class="good">' + window.ENGINE.DOMAIN_NAMES[d] + ' — índice ' + r.domains[d].index + ' (pc ' + r.domains[d].percentile + ')</li>';
+    }).join('') : '<li>Perfil equilibrado, sin un pico dominante.</li>');
+    html += '</ul></div>';
+    html += '<div><h3 class="tag-weak">Áreas a reforzar</h3><ul>';
+    html += (r.weaknesses.length ? r.weaknesses.map(function (d) {
+      return '<li class="bad">' + window.ENGINE.DOMAIN_NAMES[d] + ' — índice ' + r.domains[d].index + ' (pc ' + r.domains[d].percentile + ')</li>';
+    }).join('') : '<li>Sin debilidades relativas significativas.</li>');
+    html += '</ul></div></div></div>';
+
+    // Detalle por dominio
+    html += '<h2 class="section-title">Detalle por dominio</h2><div class="panel">';
+    DOMAINS.forEach(function (d) {
+      var dom = r.domains[d];
+      html += '<div style="padding:10px 0;border-bottom:1px solid var(--line)">' +
+        '<b style="color:' + DCOL[d] + '">' + dom.name + '</b> — índice <b>' + dom.index + '</b> · percentil ' + dom.percentile +
+        ' · aciertos ' + dom.nCorrect + '/' + dom.nItems +
+        '<br><span class="section-sub">' + dom.interpretation + '</span></div>';
+    });
+    html += '</div>';
+
+    // Revisión ítem por ítem
+    html += '<h2 class="section-title">Revisión: por qué cada respuesta</h2>';
+    html += '<p class="section-sub">Cada ítem con la respuesta correcta, la tuya y la explicación del razonamiento.</p>';
+    html += '<div class="panel">' + renderReview() + '</div>';
+
+    // Metodología
+    html += methodologyHtml(r);
+
+    // Estado de guardado + acciones
+    html += '<div class="save-status" id="save-status">Guardando tus resultados…</div>';
+    html += '<div class="actions">' +
+      '<button class="btn-primary" onclick="location.reload()">Realizar otro test</button>' +
+      '</div>';
+
+    area.innerHTML = html;
+  }
+
+  function stat(label, val) { return '<div class="stat"><b>' + val + '</b><span>' + label + '</span></div>'; }
+  function rxx(se) { var r = 1 - se * se; return (r > 0 ? r : 0).toFixed(2); } // fiabilidad ≈ 1 - SE²
+
+  function domainBar(d, dom) {
+    var pct = clamp((dom.index - 40) / 120 * 100, 2, 100);
+    return '<div class="dom-bar">' +
+      '<div class="top"><span class="name" style="color:' + DCOL[d] + '">' + dom.name + '</span>' +
+      '<span class="val">índice ' + dom.index + ' · pc ' + dom.percentile + '</span></div>' +
+      '<div class="track"><div class="mid"></div><div class="fill" style="width:' + pct + '%;background:' + DCOL[d] + '"></div></div></div>';
+  }
+
+  // ----------------------------------------------------- gráficos SVG propios
+  function bellCurveSVG(iq, pct) {
+    var W = 600, H = 240, x0 = 40, x1 = 560, baseY = 200, h = 150;
+    var iqMin = 55, iqMax = 145;
+    function px(v) { return x0 + (v - iqMin) / (iqMax - iqMin) * (x1 - x0); }
+    function py(v) { var pdf = Math.exp(-0.5 * Math.pow((v - 100) / 15, 2)); return baseY - pdf * h; }
+    var path = '', area = 'M ' + px(iqMin) + ' ' + baseY;
+    for (var v = iqMin; v <= iqMax; v += 1.5) { var X = px(v).toFixed(1), Y = py(v).toFixed(1); path += (v === iqMin ? 'M ' : 'L ') + X + ' ' + Y + ' '; area += ' L ' + X + ' ' + Y; }
+    area += ' L ' + px(iqMax) + ' ' + baseY + ' Z';
+    var grid = '';
+    [70, 85, 100, 115, 130].forEach(function (g) {
+      grid += '<line x1="' + px(g) + '" y1="' + baseY + '" x2="' + px(g) + '" y2="' + (baseY + 6) + '" stroke="#7d8aa0"/>' +
+              '<text x="' + px(g) + '" y="' + (baseY + 20) + '" font-size="12" fill="#7d8aa0" text-anchor="middle">' + g + '</text>';
+    });
+    var ux = px(clamp(iq, iqMin + 1, iqMax - 1));
+    var marker = '<line x1="' + ux + '" y1="' + (py(clamp(iq, iqMin + 1, iqMax - 1))) + '" x2="' + ux + '" y2="' + baseY + '" stroke="#5b8cff" stroke-width="3"/>' +
+      '<circle cx="' + ux + '" cy="' + py(clamp(iq, iqMin + 1, iqMax - 1)) + '" r="6" fill="#5b8cff"/>' +
+      '<text x="' + ux + '" y="40" font-size="14" font-weight="700" fill="#5b8cff" text-anchor="middle">Tú: ' + iq + '</text>' +
+      '<text x="' + ux + '" y="58" font-size="11" fill="#aab6c6" text-anchor="middle">percentil ' + pct + '</text>';
+    return '<svg class="bell" viewBox="0 0 ' + W + ' ' + H + '">' +
+      '<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b8cff" stop-opacity="0.35"/><stop offset="1" stop-color="#5b8cff" stop-opacity="0.02"/></linearGradient></defs>' +
+      '<path d="' + area + '" fill="url(#bg)"/>' +
+      '<path d="' + path + '" fill="none" stroke="#7c5cff" stroke-width="2.5"/>' +
+      '<line x1="' + x0 + '" y1="' + baseY + '" x2="' + x1 + '" y2="' + baseY + '" stroke="#2c3647"/>' +
+      grid + marker + '</svg>';
+  }
+
+  function radarSVG(domains) {
+    var cx = 180, cy = 165, maxR = 110;
+    function rOf(idx) { return clamp((idx - 40) / 120, 0, 1) * maxR; }
+    function pt(i, r) { var a = deg2rad(-90 + i * 72); return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; }
+    function ptsStr(arr) { return arr.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' '); }
+    var svg = '<svg viewBox="0 0 360 320">';
+    [70, 100, 130].forEach(function (v) {
+      var ring = DOMAINS.map(function (_, i) { return pt(i, rOf(v)); });
+      svg += '<polygon points="' + ptsStr(ring) + '" fill="none" stroke="#2c3647" stroke-width="1"/>';
+    });
+    DOMAINS.forEach(function (_, i) { var p = pt(i, maxR); svg += '<line x1="' + cx + '" y1="' + cy + '" x2="' + p[0] + '" y2="' + p[1] + '" stroke="#2c3647"/>'; });
+    var data = DOMAINS.map(function (d, i) { return pt(i, rOf(domains[d].index)); });
+    svg += '<polygon points="' + ptsStr(data) + '" fill="rgba(91,140,255,0.22)" stroke="#5b8cff" stroke-width="2.5"/>';
+    DOMAINS.forEach(function (d, i) {
+      var p = pt(i, rOf(domains[d].index));
+      svg += '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="5" fill="' + DCOL[d] + '"/>';
+      var lp = pt(i, maxR + 22);
+      svg += '<text x="' + lp[0] + '" y="' + lp[1] + '" font-size="13" font-weight="700" fill="' + DCOL[d] + '" text-anchor="middle">' + d + '</text>';
+      svg += '<text x="' + lp[0] + '" y="' + (lp[1] + 15) + '" font-size="12" fill="#aab6c6" text-anchor="middle">' + domains[d].index + '</text>';
+    });
+    var c100 = pt(0, rOf(100));
+    svg += '<text x="' + (cx + 4) + '" y="' + (c100[1] - 2) + '" font-size="10" fill="#7d8aa0">100</text>';
+    return svg + '</svg>';
+  }
+
+  // ---------------------------------------------------------- revisión ítems
+  function renderReview() {
+    var resp = App.session.state.responses;
+    return resp.map(function (r, n) {
+      var item = r.item;
+      var ok = r.correct;
+      var h = '<div class="review-item">';
+      h += '<div class="rh"><b>' + (n + 1) + '.</b> <span class="badge dom" style="color:' + DCOL[item.domain] + '">' + item.domain + '</span>' +
+           '<span class="badge ' + (ok ? 'ok' : 'no') + '">' + (ok ? '✓ Correcto' : '✗ Incorrecto') + '</span></div>';
+      h += '<div style="margin-bottom:6px">' + item.stem + '</div>';
+      if (item.figureHtml) h += '<div class="review-thumbs"><div class="th">' + item.figureHtml + '</div></div>';
+
+      if (item.mode === 'choice' || item.mode === 'speed-choice') {
+        h += '<div class="review-thumbs">';
+        item.options.forEach(function (o, i) {
+          var cls = 'th';
+          if (i === item.correctIndex) cls += ' correct';
+          else if (i === r.chosen) cls += ' chosen-wrong';
+          h += '<div class="' + cls + '">' + o.html + '</div>';
+        });
+        h += '</div>';
+      } else if (item.mode === 'digitspan') {
+        h += '<div class="expl">Secuencia: <b>' + item.memory.sequence.join(' ') + '</b> · Correcto (inverso): <b>' +
+          item.answer.split('').join(' ') + '</b> · Tu respuesta: <b>' + (r.chosen || '—') + '</b></div>';
+      } else if (item.mode === 'corsi') {
+        h += '<div class="expl">Correcto (inverso): <b>' + item.answer.map(function (x) { return x + 1; }).join(' → ') +
+          '</b> · Tu respuesta: <b>' + (r.chosen && r.chosen.length ? r.chosen.map(function (x) { return x + 1; }).join(' → ') : '—') + '</b></div>';
+      }
+      h += '<div class="expl"><b>Explicación:</b> ' + item.explanation + '</div>';
+      return h + '</div>';
+    }).join('');
+  }
+
+  function methodologyHtml(r) {
+    return '<details class="method"><summary>Metodología y rigor psicométrico</summary>' +
+      '<p><b>Marco teórico:</b> el test sigue la teoría <b>Cattell–Horn–Carroll (CHC)</b>, evaluando cinco capacidades amplias del Estrato II ' +
+      '(Gf, Gc, Gwm, Gs, Gv) que convergen en el factor general <em>g</em> (Estrato III).</p>' +
+      '<p><b>Puntuación:</b> cada ítem tiene parámetros de la <b>Teoría de Respuesta al Ítem</b> (modelo 3PL: dificultad <i>b</i>, ' +
+      'discriminación <i>a</i> y azar <i>c</i>). La habilidad θ se estima por <b>EAP</b> (media a posteriori, prior normal). ' +
+      'La fiabilidad mostrada es 1 − EE².</p>' +
+      '<p><b>Adaptativo (CAT):</b> ' + (r.adaptive ? 'la dificultad de cada ítem se ajustó a tu nivel estimado, equilibrando los cinco dominios.' :
+        'modo lineal (dificultad media fija).') + '</p>' +
+      '<p><b>Estandarización:</b> θ se normaliza según tu <b>edad</b> y se convierte a la escala CI (media 100, desviación 15). ' +
+      'El percentil proviene de la distribución normal: CI 130 ≈ +2σ ≈ percentil 97,7.</p>' +
+      '<p style="color:var(--warn)"><b>Aviso:</b> instrumento educativo y de autoconocimiento. Las normas por edad son ilustrativas ' +
+      '(basadas en las curvas conocidas de desarrollo y envejecimiento cognitivo); no equivale a una evaluación clínica con baremos validados ' +
+      '(WAIS-V, Raven, etc.) administrada por un profesional.</p></details>';
+  }
+
+  // =========================================================================
+  //  PERSISTENCIA EN GOOGLE SHEETS
+  // =========================================================================
+  function persist(result) {
+    var statusEl = qs('#save-status');
+    if (typeof google === 'undefined' || !google.script || !google.script.run) {
+      statusEl.className = 'save-status';
+      statusEl.textContent = 'Vista previa local: los resultados no se guardan (ejecuta la app desde Google Apps Script para registrarlos).';
+      return;
+    }
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (res && res.ok) {
+          statusEl.className = 'save-status save-ok';
+          statusEl.innerHTML = '✓ Resultados guardados en Google Sheets. ' +
+            '<a href="' + res.spreadsheetUrl + '" target="_blank" style="color:var(--brand)">Abrir hoja</a>';
+        } else {
+          statusEl.className = 'save-status save-err';
+          statusEl.textContent = '⚠ No se pudieron guardar los resultados: ' + (res && res.error ? res.error : 'error desconocido');
+        }
+      })
+      .withFailureHandler(function (err) {
+        statusEl.className = 'save-status save-err';
+        statusEl.textContent = '⚠ Error al guardar: ' + (err && err.message ? err.message : err);
+      })
+      .saveResult(result);
+  }
+
+})();
+</script>

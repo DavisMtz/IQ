@@ -1,0 +1,485 @@
+<script>
+/**
+ * BANCO DE ÍTEMS — Generadores procedurales por dominio CHC
+ * ----------------------------------------------------------
+ * Cada ítem se entrega con:
+ *   domain  : Gf | Gc | Gwm | Gs | Gv
+ *   type    : subtipo (matrix, sequence, verbal, digitspan, ...)
+ *   a,b,c   : parámetros IRT (discriminación, dificultad, azar)
+ *   mode    : 'choice' | 'speed-choice' | 'digitspan' | 'corsi'
+ *   ...      : material visual (SVG/HTML), opciones, índice correcto, explicación
+ *
+ * Todos los generadores producen ítems verificables (la clave se calcula,
+ * no se adivina) y aceptan una dificultad objetivo (targetB) para el CAT.
+ */
+(function (global) {
+  'use strict';
+
+  // ---------------------------------------------------------------- utilidades
+  function randInt(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
+  function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
+  function shuffle(a) {
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = randInt(0, i); var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+  function sampleN(arr, n) { return shuffle(arr.slice()).slice(0, n); }
+  function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+  function uid(p) { return (p || 'it') + '_' + Math.random().toString(36).slice(2, 8); }
+
+  var COLORS = ['#5b8cff', '#34d399', '#fbbf24', '#f472b6', '#7c5cff', '#e2e8f0'];
+  var SHAPES = ['circle', 'square', 'triangle', 'diamond', 'hexagon', 'star'];
+
+  // ------------------------------------------------------------ dibujo de formas
+  function poly(points, color, extra) {
+    var p = points.map(function (pt) { return pt[0].toFixed(1) + ',' + pt[1].toFixed(1); }).join(' ');
+    return '<polygon points="' + p + '" fill="' + color + '" ' + (extra || '') + '/>';
+  }
+  function drawShape(shape, cx, cy, r, color) {
+    switch (shape) {
+      case 'circle': return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + color + '"/>';
+      case 'square': return '<rect x="' + (cx - r) + '" y="' + (cy - r) + '" width="' + (2 * r) + '" height="' + (2 * r) + '" rx="2" fill="' + color + '"/>';
+      case 'triangle': return poly([[cx, cy - r], [cx - r, cy + r], [cx + r, cy + r]], color);
+      case 'diamond': return poly([[cx, cy - r], [cx + r, cy], [cx, cy + r], [cx - r, cy]], color);
+      case 'hexagon': {
+        var pts = []; for (var i = 0; i < 6; i++) { var ang = Math.PI / 180 * (60 * i - 30); pts.push([cx + r * Math.cos(ang), cy + r * Math.sin(ang)]); }
+        return poly(pts, color);
+      }
+      case 'star': {
+        var sp = []; for (var k = 0; k < 10; k++) { var a2 = Math.PI / 180 * (36 * k - 90); var rr = (k % 2 === 0) ? r : r * 0.45; sp.push([cx + rr * Math.cos(a2), cy + rr * Math.sin(a2)]); }
+        return poly(sp, color);
+      }
+      case 'cross': {
+        var w = r * 0.5;
+        return '<rect x="' + (cx - w) + '" y="' + (cy - r) + '" width="' + (2 * w) + '" height="' + (2 * r) + '" fill="' + color + '"/>' +
+               '<rect x="' + (cx - r) + '" y="' + (cy - w) + '" width="' + (2 * r) + '" height="' + (2 * w) + '" fill="' + color + '"/>';
+      }
+      default: return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + color + '"/>';
+    }
+  }
+  function svg(viewW, viewH, inner, cls) {
+    return '<svg class="' + (cls || '') + '" viewBox="0 0 ' + viewW + ' ' + viewH + '" preserveAspectRatio="xMidYMid meet">' + inner + '</svg>';
+  }
+
+  function makeChoice(item, opts) {
+    shuffle(opts);
+    item.options = opts.map(function (o) { return { html: o.render }; });
+    item.correctIndex = opts.findIndex(function (o) { return o.correct; });
+    return item;
+  }
+
+  // ======================================================================
+  //  Gf — RAZONAMIENTO FLUIDO
+  // ======================================================================
+
+  // ---- Matrices tipo Raven (cuadrado lógico de 3×3) -------------------------
+  function cellInner(feat) {
+    var positions = {
+      1: [[50, 50]], 2: [[33, 50], [67, 50]],
+      3: [[50, 33], [34, 66], [66, 66]],
+      4: [[34, 34], [66, 34], [34, 66], [66, 66]]
+    };
+    var radius = { 1: 20, 2: 16, 3: 15, 4: 13 }[feat.count];
+    return positions[feat.count].map(function (p) {
+      return drawShape(feat.shape, p[0], p[1], radius, feat.color);
+    }).join('');
+  }
+  function qMark() {
+    return '<text x="50" y="64" font-size="46" font-weight="800" fill="#5b8cff" text-anchor="middle">?</text>';
+  }
+
+  function genMatrix(targetB) {
+    var attrs = shuffle(['shape', 'color', 'count']);
+    var nrules = targetB < -0.4 ? 1 : (targetB < 0.8 ? 2 : 3);
+    var varying = attrs.slice(0, nrules);
+    var constant = attrs.slice(nrules);
+
+    var pools = {
+      shape: sampleN(SHAPES, 3),
+      color: sampleN(COLORS, 3),
+      count: sampleN([1, 2, 3, 4], 3)
+    };
+    var fullPools = { shape: SHAPES, color: COLORS, count: [1, 2, 3, 4] };
+
+    // Cuadrado latino: cada valor aparece una vez por fila y por columna.
+    var shift = {}; varying.forEach(function (a) { shift[a] = pick([1, 2]); });
+    var constVal = {}; constant.forEach(function (a) { constVal[a] = pick(fullPools[a]); });
+
+    function featAt(r, c) {
+      var f = {};
+      varying.forEach(function (a) { f[a] = pools[a][(c + shift[a] * r) % 3]; });
+      constant.forEach(function (a) { f[a] = constVal[a]; });
+      return f;
+    }
+
+    var grid = '';
+    var pad = 8, S = 100;
+    for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) {
+      var tx = c * S + pad, ty = r * S + pad;
+      grid += '<rect x="' + (tx) + '" y="' + (ty) + '" width="' + S + '" height="' + S + '" fill="none" stroke="#2c3647" stroke-width="1.5"/>';
+      var content = (r === 2 && c === 2) ? qMark() : cellInner(featAt(r, c));
+      grid += '<g transform="translate(' + tx + ',' + ty + ')">' + content + '</g>';
+    }
+    var totW = 3 * S + 2 * pad;
+    var figure = svg(totW, totW, grid, 'matrix-svg');
+
+    var correct = featAt(2, 2);
+    var sig = function (f) { return f.shape + '|' + f.color + '|' + f.count; };
+    var seen = {}; seen[sig(correct)] = true;
+    var distractors = [];
+    ['shape', 'color', 'count'].forEach(function (a) {
+      fullPools[a].forEach(function (v) {
+        if (v === correct[a]) return;
+        var f = { shape: correct.shape, color: correct.color, count: correct.count };
+        f[a] = v;
+        if (!seen[sig(f)]) { seen[sig(f)] = true; distractors.push(f); }
+      });
+    });
+    shuffle(distractors);
+    var chosen = distractors.slice(0, 5);
+
+    var optObjs = [{ feat: correct, correct: true }].concat(chosen.map(function (f) { return { feat: f, correct: false }; }));
+    optObjs = optObjs.map(function (o) { return { correct: o.correct, render: svg(100, 100, cellInner(o.feat)) }; });
+
+    var ruleTxt = varying.map(function (a) {
+      return ({ shape: 'la forma', color: 'el color', count: 'la cantidad' })[a];
+    }).join(', ');
+
+    var item = {
+      id: uid('gf_m'), domain: 'Gf', type: 'matrix', mode: 'choice',
+      a: 1.2, b: clamp(targetB, nrules === 1 ? -1.3 : nrules === 2 ? -0.3 : 0.8, nrules === 1 ? -0.3 : nrules === 2 ? 0.8 : 1.9),
+      c: 1 / optObjs.length, optionCols: 3,
+      stem: 'Completa la matriz: ¿qué figura falta en la casilla con el signo de interrogación?',
+      hint: 'Observa cómo cambian los atributos a lo largo de las filas y columnas.',
+      figureHtml: figure,
+      explanation: 'En esta matriz varía ' + ruleTxt + '. Aplicando la regla de distribución (cada valor aparece una sola vez por fila y por columna), la casilla faltante debe tener ' +
+        correct.count + ' ' + ({ circle: 'círculo(s)', square: 'cuadrado(s)', triangle: 'triángulo(s)', diamond: 'rombo(s)', hexagon: 'hexágono(s)', star: 'estrella(s)' })[correct.shape] +
+        ' del color indicado. Por eliminación, esa es la única opción que cumple todas las reglas a la vez.'
+    };
+    return makeChoice(item, optObjs);
+  }
+
+  // ---- Series numéricas / lógicas -------------------------------------------
+  function numTiles(arr, opts) {
+    opts = opts || {};
+    return '<div class="numrow">' + arr.map(function (n) {
+      return '<span class="numtile' + (n === '?' ? ' q' : '') + '">' + n + '</span>';
+    }).join('') + '</div>';
+  }
+  function numericDistractors(ans, shown) {
+    var set = {}; var out = [];
+    var last = shown[shown.length - 1], prev = shown[shown.length - 2];
+    var step = (last - prev);
+    var cands = [ans + step, ans - step, ans + 1, ans - 1, ans + 2, ans - 2,
+                 Math.round(ans * 1.15), Math.round(ans * 0.85), last + step + step];
+    for (var i = 0; i < cands.length && out.length < 3; i++) {
+      var v = cands[i];
+      if (v !== ans && !set[v] && (typeof v === 'number') && isFinite(v)) { set[v] = 1; out.push(v); }
+    }
+    var k = 3;
+    while (out.length < 3) { var w = ans + (++k); if (w !== ans && !set[w]) { set[w] = 1; out.push(w); } }
+    return out;
+  }
+  function genSequence(targetB) {
+    var rules = [
+      { key: 'arith', b: -0.8, gen: function () {
+          var s = randInt(2, 9), d = randInt(2, 9), t = [];
+          for (var i = 0; i < 6; i++) t.push(s + i * d);
+          return { t: t, ex: 'Progresión aritmética: cada término aumenta en ' + d + '. ' + t[4] + ' + ' + d + ' = ' + t[5] + '.' };
+      } },
+      { key: 'geom', b: 0.1, gen: function () {
+          var s = randInt(2, 4), r = randInt(2, 3), t = [];
+          for (var i = 0; i < 6; i++) t.push(s * Math.pow(r, i));
+          return { t: t, ex: 'Progresión geométrica: cada término se multiplica por ' + r + '. ' + t[4] + ' × ' + r + ' = ' + t[5] + '.' };
+      } },
+      { key: 'second', b: 0.6, gen: function () {
+          var s = randInt(2, 6), d0 = randInt(1, 4), e = randInt(1, 3), t = [s], d = d0;
+          for (var i = 1; i < 6; i++) { t.push(t[i - 1] + d); d += e; }
+          return { t: t, ex: 'Las diferencias entre términos crecen de forma constante (+' + e + ' cada paso). La siguiente diferencia es ' + d + ', así que ' + t[4] + ' + ' + d + ' = ' + t[5] + '.' };
+      } },
+      { key: 'fib', b: 0.85, gen: function () {
+          var a = randInt(1, 4), b = randInt(2, 6), t = [a, b];
+          for (var i = 2; i < 6; i++) t.push(t[i - 1] + t[i - 2]);
+          return { t: t, ex: 'Cada término es la suma de los dos anteriores (tipo Fibonacci). ' + t[3] + ' + ' + t[4] + ' = ' + t[5] + '.' };
+      } },
+      { key: 'inter', b: 1.2, gen: function () {
+          var s1 = randInt(1, 5), d1 = randInt(2, 5), s2 = randInt(20, 40), d2 = -randInt(2, 5), t = [];
+          var A = [s1, s1 + d1, s1 + 2 * d1], B = [s2, s2 + d2, s2 + 2 * d2];
+          t = [A[0], B[0], A[1], B[1], A[2], B[2]];
+          return { t: t, ex: 'Hay dos series alternadas: una creciente (' + A.join(', ') + ') y otra decreciente (' + B.join(', ') + '). El término faltante pertenece a la segunda serie: ' + B[2] + '.' };
+      } },
+      { key: 'muladd', b: 1.5, gen: function () {
+          var a0 = randInt(1, 3), k = randInt(2, 3), m = randInt(1, 4), t = [a0];
+          for (var i = 1; i < 6; i++) t.push(t[i - 1] * k + m);
+          return { t: t, ex: 'Cada término se obtiene multiplicando el anterior por ' + k + ' y sumando ' + m + '. ' + t[4] + ' × ' + k + ' + ' + m + ' = ' + t[5] + '.' };
+      } }
+    ];
+    rules.sort(function (a, b) { return Math.abs(a.b - targetB) - Math.abs(b.b - targetB); });
+    var rule = rules[0];
+    var g = rule.gen();
+    var shown = g.t.slice(0, 5), ans = g.t[5];
+    var ds = numericDistractors(ans, shown);
+    var optObjs = [{ v: ans, correct: true }].concat(ds.map(function (d) { return { v: d, correct: false }; }));
+    optObjs = optObjs.map(function (o) { return { correct: o.correct, render: '<span class="numtile big">' + o.v + '</span>' }; });
+
+    var item = {
+      id: uid('gf_s'), domain: 'Gf', type: 'sequence', mode: 'choice',
+      a: 1.1, b: clamp(targetB, rule.b - 0.4, rule.b + 0.4), c: 0.25, optionCols: 4,
+      stem: '¿Qué número continúa la serie?',
+      hint: 'Identifica la regla que relaciona cada número con el siguiente.',
+      figureHtml: numTiles(shown.concat(['?'])),
+      explanation: g.ex
+    };
+    return makeChoice(item, optObjs);
+  }
+
+  // ======================================================================
+  //  Gc — CONOCIMIENTO CRISTALIZADO (banco verbal fijo, español)
+  // ======================================================================
+  var GC_BANK = [
+    { id: 'gc01', b: -1.0, q: 'DÍA es a NOCHE como CALOR es a:', o: ['Frío', 'Sol', 'Verano', 'Fuego'], k: 0, e: 'Es una analogía de opuestos: día/noche son antónimos, igual que calor/frío.' },
+    { id: 'gc02', b: -0.9, q: 'GUANTE es a MANO como ZAPATO es a:', o: ['Pie', 'Calcetín', 'Cabeza', 'Dedo'], k: 0, e: 'Relación de “prenda que cubre”: el guante cubre la mano y el zapato cubre el pie.' },
+    { id: 'gc03', b: -0.8, q: 'PÁJARO es a VOLAR como PEZ es a:', o: ['Nadar', 'Caminar', 'Saltar', 'Respirar'], k: 0, e: 'Relación de locomoción característica: el pájaro vuela y el pez nada.' },
+    { id: 'gc04', b: -0.4, q: 'Antónimo de ABUNDANTE:', o: ['Escaso', 'Grande', 'Lleno', 'Numeroso'], k: 0, e: '“Abundante” significa en gran cantidad; su opuesto es “escaso”.' },
+    { id: 'gc05', b: -0.2, q: 'VICTORIA es a DERROTA como ASCENSO es a:', o: ['Descenso', 'Trabajo', 'Premio', 'Subida'], k: 0, e: 'Analogía de antónimos: victoria/derrota se opone igual que ascenso/descenso.' },
+    { id: 'gc06', b: 0.0, q: "El autor de 'Don Quijote de la Mancha' es:", o: ['Miguel de Cervantes', 'Lope de Vega', 'Jorge Luis Borges', 'Gabriel García Márquez'], k: 0, e: 'Cultura general literaria: la obra fue escrita por Miguel de Cervantes (1605).' },
+    { id: 'gc07', b: 0.1, q: '¿Cuál NO es un mamífero?', o: ['Tiburón', 'Ballena', 'Murciélago', 'Delfín'], k: 0, e: 'Ballena, delfín y murciélago son mamíferos; el tiburón es un pez cartilaginoso.' },
+    { id: 'gc08', b: 0.2, q: 'Sinónimo de OBSOLETO:', o: ['Anticuado', 'Moderno', 'Costoso', 'Resistente'], k: 0, e: '“Obsoleto” significa caído en desuso; su sinónimo es “anticuado”.' },
+    { id: 'gc09', b: 0.35, q: '¿Qué significa IDÓNEO?', o: ['Adecuado o apto', 'Inútil', 'Extraño', 'Peligroso'], k: 0, e: '“Idóneo” describe a quien o lo que reúne las condiciones adecuadas para algo.' },
+    { id: 'gc10', b: 0.4, q: 'Sinónimo más preciso de MITIGAR:', o: ['Aliviar o atenuar', 'Empeorar', 'Ignorar', 'Acelerar'], k: 0, e: '“Mitigar” es moderar o suavizar algo negativo; equivale a aliviar o atenuar.' },
+    { id: 'gc11', b: 0.5, q: 'Si todos los Bloops son Razzies y todos los Razzies son Lazzies, entonces todos los Bloops son necesariamente:', o: ['Lazzies', 'Solo Razzies', 'Ni Razzies ni Lazzies', 'No se puede afirmar'], k: 0, e: 'Silogismo transitivo: Bloops ⊆ Razzies ⊆ Lazzies, por lo tanto todo Bloop es un Lazzie.' },
+    { id: 'gc12', b: 0.55, q: 'Una persona FRUGAL es alguien que:', o: ['Consume y gasta con moderación', 'Come en exceso', 'Es muy generosa', 'Trabaja sin descanso'], k: 0, e: '“Frugal” describe a quien vive y gasta de forma moderada y sin excesos.' },
+    { id: 'gc13', b: 0.6, q: 'Sinónimo de PERSPICAZ:', o: ['Astuto y sagaz', 'Torpe', 'Lento', 'Distraído'], k: 0, e: '“Perspicaz” es quien capta y comprende las cosas con rapidez y agudeza.' },
+    { id: 'gc14', b: 0.75, q: 'Sinónimo de EFÍMERO:', o: ['Pasajero', 'Eterno', 'Sólido', 'Profundo'], k: 0, e: '“Efímero” significa de muy corta duración; su sinónimo es “pasajero”.' },
+    { id: 'gc15', b: 0.95, q: '¿Qué significa LACÓNICO?', o: ['Breve y conciso al hablar', 'Muy hablador', 'Triste', 'Desordenado'], k: 0, e: '“Lacónico” describe a quien se expresa de forma breve y concisa.' },
+    { id: 'gc16', b: 1.0, q: 'Antónimo de DIÁFANO:', o: ['Opaco', 'Claro', 'Limpio', 'Puro'], k: 0, e: '“Diáfano” significa transparente o claro; su antónimo es “opaco”.' },
+    { id: 'gc17', b: 1.15, q: 'Antónimo de PRÓDIGO:', o: ['Tacaño', 'Generoso', 'Amplio', 'Derrochador'], k: 0, e: '“Pródigo” es quien gasta con generosidad o derroche; su opuesto es “tacaño”.' },
+    { id: 'gc18', b: 1.3, q: 'Antónimo de MAGNÁNIMO:', o: ['Mezquino', 'Generoso', 'Valiente', 'Noble'], k: 0, e: '“Magnánimo” es quien actúa con grandeza y generosidad; su antónimo es “mezquino”.' }
+  ];
+  function genVerbal(targetB, usedIds) {
+    var avail = GC_BANK.filter(function (it) { return usedIds.indexOf(it.id) === -1; });
+    if (!avail.length) avail = GC_BANK.slice();
+    avail.sort(function (a, b) { return Math.abs(a.b - targetB) - Math.abs(b.b - targetB); });
+    var src = avail[0];
+    var optObjs = src.o.map(function (txt, i) { return { correct: i === src.k, render: '<span class="opt-text">' + txt + '</span>' }; });
+    var item = {
+      id: src.id, domain: 'Gc', type: 'verbal', mode: 'choice',
+      a: 1.0, b: src.b, c: 0.25, optionCols: 2,
+      stem: src.q, hint: '', figureHtml: '', explanation: src.e
+    };
+    return makeChoice(item, optObjs);
+  }
+
+  // ======================================================================
+  //  Gwm — MEMORIA DE TRABAJO
+  // ======================================================================
+  function lenFromB(targetB, minL, maxL, b0, perStep) {
+    var L = Math.round(minL + (targetB - b0) / perStep);
+    return clamp(L, minL, maxL);
+  }
+  function genDigitSpan(targetB) {
+    var L = lenFromB(targetB, 3, 8, -1.3, 0.7);
+    var seq = []; var prev = -1;
+    for (var i = 0; i < L; i++) { var d; do { d = randInt(0, 9); } while (d === prev); seq.push(d); prev = d; }
+    var ans = seq.slice().reverse().join('');
+    return {
+      id: uid('wm_d'), domain: 'Gwm', type: 'digitspan', mode: 'digitspan',
+      a: 1.1, b: -1.3 + (L - 3) * 0.7, c: 0.02,
+      stem: 'Memoriza los ' + L + ' dígitos y luego escríbelos EN ORDEN INVERSO.',
+      hint: 'Aparecerán uno por uno. Cuando terminen, teclea la secuencia al revés.',
+      memory: { kind: 'digits', sequence: seq, length: L },
+      answer: ans,
+      explanation: 'La secuencia mostrada fue ' + seq.join(' ') + '. Al invertirla se obtiene ' + seq.slice().reverse().join(' ') + '. Esta tarea mide la capacidad de retener y manipular información en la memoria de trabajo.'
+    };
+  }
+  function genCorsi(targetB) {
+    var L = lenFromB(targetB, 3, 7, -1.0, 0.8);
+    var cells = []; var prev = -1;
+    for (var i = 0; i < L; i++) { var x; do { x = randInt(0, 8); } while (x === prev); cells.push(x); prev = x; }
+    return {
+      id: uid('wm_c'), domain: 'Gwm', type: 'corsi', mode: 'corsi',
+      a: 1.0, b: -1.0 + (L - 3) * 0.8, c: 0.03,
+      stem: 'Memoriza el orden en que se iluminan las casillas y luego tócalas EN ORDEN INVERSO.',
+      hint: 'Primero observa la secuencia completa; después reprodúcela al revés.',
+      memory: { kind: 'corsi', sequence: cells, gridN: 3, length: L },
+      answer: cells.slice().reverse(),
+      explanation: 'Las casillas se iluminaron en cierto orden; la respuesta correcta es tocarlas en orden inverso. Es la versión visoespacial de la amplitud de memoria de trabajo (test de Corsi inverso).'
+    };
+  }
+  function genArithmetic(targetB) {
+    var expr, val, ex;
+    if (targetB < -0.3) {
+      var a = randInt(12, 40), b = randInt(8, 30), op = pick(['+', '−']);
+      val = op === '+' ? a + b : a - b; expr = a + ' ' + op + ' ' + b;
+      ex = 'Operación directa de dos términos: ' + expr + ' = ' + val + '.';
+    } else if (targetB < 0.7) {
+      var x = randInt(3, 9), y = randInt(3, 9), z = randInt(5, 30);
+      val = x * y + z; expr = x + ' × ' + y + ' + ' + z;
+      ex = 'Primero multiplica (' + x + ' × ' + y + ' = ' + (x * y) + ') y luego suma ' + z + ': total ' + val + '.';
+    } else {
+      var p = randInt(4, 9), q = randInt(3, 8), m = randInt(3, 7), n = randInt(2, 6);
+      val = p * q - m * n; expr = p + ' × ' + q + ' − ' + m + ' × ' + n;
+      ex = 'Resuelve las dos multiplicaciones (' + (p * q) + ' y ' + (m * n) + ') y réstalas: ' + (p * q) + ' − ' + (m * n) + ' = ' + val + '.';
+    }
+    var shown = [val - 1, val + 1];
+    var ds = numericDistractors(val, shown);
+    var optObjs = [{ v: val, correct: true }].concat(ds.map(function (d) { return { v: d, correct: false }; }));
+    optObjs = optObjs.map(function (o) { return { correct: o.correct, render: '<span class="numtile big">' + o.v + '</span>' }; });
+    var item = {
+      id: uid('wm_a'), domain: 'Gwm', type: 'arithmetic', mode: 'choice',
+      a: 1.05, b: clamp(targetB, -1.0, 1.8), c: 0.25, optionCols: 4,
+      stem: 'Calcula mentalmente (sin escribir pasos):',
+      hint: 'Mantén los resultados parciales en la memoria mientras operas.',
+      figureHtml: '<div class="mathexpr">' + expr + ' = ?</div>',
+      explanation: ex
+    };
+    return makeChoice(item, optObjs);
+  }
+
+  // ======================================================================
+  //  Gs — VELOCIDAD DE PROCESAMIENTO (cronometrado)
+  // ======================================================================
+  function glyphSVG(g, size) {
+    return svg(size || 60, size || 60, drawShape(g.shape, 30, 30, 18, g.color));
+  }
+  function genSpeedMatch(targetB) {
+    var N = targetB < -0.3 ? 4 : (targetB < 0.7 ? 5 : 6);
+    var deadline = targetB < -0.3 ? 7000 : (targetB < 0.7 ? 5000 : (targetB < 1.4 ? 3800 : 2800));
+    var target = { shape: pick(SHAPES), color: pick(COLORS) };
+    var opts = [{ g: target, correct: true }];
+    var usedSig = { }; usedSig[target.shape + target.color] = 1;
+    while (opts.length < N) {
+      var g = { shape: pick(SHAPES), color: pick(COLORS) };
+      if (!usedSig[g.shape + g.color]) { usedSig[g.shape + g.color] = 1; opts.push({ g: g, correct: false }); }
+    }
+    opts = opts.map(function (o) { return { correct: o.correct, render: glyphSVG(o.g, 64) }; });
+    var item = {
+      id: uid('gs_m'), domain: 'Gs', type: 'speed-match', mode: 'speed-choice',
+      a: 0.95, b: clamp(targetB, -1.0, 1.8), c: 1 / N, optionCols: N <= 4 ? 4 : 3,
+      timeLimitMs: deadline,
+      stem: '¡Rápido! Marca el símbolo idéntico al modelo:',
+      hint: 'Tienes pocos segundos. Si se acaba el tiempo, cuenta como fallo.',
+      figureHtml: '<div class="speed-model">' + glyphSVG(target, 72) + '</div>',
+      explanation: 'El modelo era ' + target.shape + ' de color indicado; solo una opción coincide exactamente en forma y color. Esta prueba mide la rapidez para procesar información visual simple bajo presión de tiempo.'
+    };
+    return makeChoice(item, opts);
+  }
+  function genSpeedCompare(targetB) {
+    var L = targetB < 0 ? 5 : (targetB < 0.9 ? 6 : 7);
+    var deadline = targetB < 0 ? 6000 : (targetB < 0.9 ? 4500 : 3200);
+    function rowGlyphs() { var a = []; for (var i = 0; i < L; i++) a.push({ shape: pick(SHAPES), color: pick(COLORS) }); return a; }
+    var rowA = rowGlyphs();
+    var same = Math.random() < 0.5;
+    var rowB = rowA.map(function (g) { return { shape: g.shape, color: g.color }; });
+    if (!same) { var idx = randInt(0, L - 1); var ng; do { ng = { shape: pick(SHAPES), color: pick(COLORS) }; } while (ng.shape === rowB[idx].shape && ng.color === rowB[idx].color); rowB[idx] = ng; }
+    function rowHtml(row) { return '<div class="glyph-row">' + row.map(function (g) { return glyphSVG(g, 42); }).join('') + '</div>'; }
+    var optObjs = [
+      { correct: same === true, render: '<span class="opt-text">Sí, idénticas</span>' },
+      { correct: same === false, render: '<span class="opt-text">No, son diferentes</span>' }
+    ];
+    var item = {
+      id: uid('gs_c'), domain: 'Gs', type: 'speed-compare', mode: 'speed-choice',
+      a: 0.9, b: clamp(targetB, -1.0, 1.6), c: 0.5, optionCols: 2,
+      timeLimitMs: deadline,
+      stem: '¿Las dos filas son exactamente iguales?',
+      hint: 'Compara símbolo por símbolo lo más rápido que puedas.',
+      figureHtml: rowHtml(rowA) + '<div class="vs">vs</div>' + rowHtml(rowB),
+      explanation: same ? 'Ambas filas eran idénticas símbolo por símbolo.' : 'Las filas diferían en un símbolo. Detectar diferencias con rapidez es una medida de velocidad de procesamiento perceptivo.'
+    };
+    return makeChoice(item, optObjs);
+  }
+
+  // ======================================================================
+  //  Gv — PROCESAMIENTO VISOESPACIAL
+  // ======================================================================
+  var BASE_FIG = { poly: [[30, 22], [30, 78], [52, 78], [52, 50], [70, 50], [70, 22]], marker: [36, 28] };
+  function rotatePts(pts, deg, cx, cy) {
+    var r = deg * Math.PI / 180, cs = Math.cos(r), sn = Math.sin(r);
+    return pts.map(function (p) { var dx = p[0] - cx, dy = p[1] - cy; return [cx + dx * cs - dy * sn, cy + dx * sn + dy * cs]; });
+  }
+  function mirrorPts(pts, cx) { return pts.map(function (p) { return [2 * cx - p[0], p[1]]; }); }
+  function figSVG(fig, color) {
+    var inner = poly(fig.poly, color) + drawShape('circle', fig.marker[0], fig.marker[1], 6, '#0e1116');
+    return svg(100, 100, inner);
+  }
+  function transformFig(deg, mirror) {
+    var poly2 = BASE_FIG.poly.map(function (p) { return p.slice(); });
+    var mk = BASE_FIG.marker.slice();
+    if (mirror) { poly2 = mirrorPts(poly2, 50); mk = mirrorPts([mk], 50)[0]; }
+    poly2 = rotatePts(poly2, deg, 50, 50);
+    mk = rotatePts([mk], deg, 50, 50)[0];
+    return { poly: poly2, marker: mk };
+  }
+  function genRotation(targetB) {
+    var angles = [0, 45, 90, 135, 180, 225, 270, 315];
+    var hard = targetB > 0.6;
+    var correctAngle = hard ? pick([45, 135, 225, 315]) : pick([90, 180, 270]);
+    var color = pick(COLORS);
+    var correctFig = transformFig(correctAngle, false);
+
+    var usedAngles = {}; usedAngles[correctAngle] = 1;
+    var distAngles = [];
+    shuffle(angles.slice()).forEach(function (a) { if (distAngles.length < 3) distAngles.push(a); });
+    var optObjs = [{ correct: true, render: figSVG(correctFig, color) }];
+    distAngles.forEach(function (a) { optObjs.push({ correct: false, render: figSVG(transformFig(a, true), color) }); });
+
+    var item = {
+      id: uid('gv_r'), domain: 'Gv', type: 'rotation', mode: 'choice',
+      a: 1.15, b: clamp(targetB, hard ? 0.4 : -1.2, hard ? 1.8 : 0.6), c: 0.25, optionCols: 4,
+      stem: '¿Cuál figura es la MISMA que el modelo, solo que ROTADA (sin reflejar)?',
+      hint: 'Tres opciones son imágenes espejo: por mucho que las gires, no coinciden con el modelo.',
+      figureHtml: '<div class="rot-model"><span class="rot-label">Modelo</span>' + figSVG(BASE_FIG, color) + '</div>',
+      explanation: 'El modelo se puede girar ' + correctAngle + '° para obtener la opción correcta. Las demás son imágenes reflejadas (espejo): cambian la quiralidad y no pueden obtenerse mediante una simple rotación. El punto oscuro ayuda a seguir la orientación.'
+    };
+    return makeChoice(item, optObjs);
+  }
+  function genOddOne(targetB) {
+    var color = pick(COLORS);
+    var rots = shuffle([0, 45, 90, 135, 180, 225, 270, 315]).slice(0, 4);
+    var optObjs = rots.map(function (a) { return { correct: false, render: figSVG(transformFig(a, false), color) }; });
+    var oddAngle = pick([30, 60, 120, 200, 300]);
+    optObjs.push({ correct: true, render: figSVG(transformFig(oddAngle, true), color) });
+    var item = {
+      id: uid('gv_o'), domain: 'Gv', type: 'oddone', mode: 'choice',
+      a: 1.05, b: clamp(targetB, -0.6, 1.6), c: 0.2, optionCols: 5,
+      stem: 'Cuatro de estas figuras son la misma rotada. Marca la DIFERENTE (la imagen espejo).',
+      hint: 'Cuatro son giros del mismo objeto; una es su reflejo y no encaja por rotación.',
+      figureHtml: '',
+      explanation: 'Cuatro figuras son rotaciones del mismo objeto y comparten su quiralidad. La opción marcada es la imagen espejo: aunque se parezca, no puede superponerse a las demás mediante rotación.'
+    };
+    return makeChoice(item, optObjs);
+  }
+
+  // ======================================================================
+  //  Despachador adaptativo
+  // ======================================================================
+  var DOMAIN_GENERATORS = {
+    Gf: function (b, used, count) { return (count % 2 === 0) ? genMatrix(b) : genSequence(b); },
+    Gc: function (b, used) { return genVerbal(b, used); },
+    Gwm: function (b, used, count) { var r = count % 3; return r === 0 ? genDigitSpan(b) : (r === 1 ? genArithmetic(b) : genCorsi(b)); },
+    Gs: function (b, used, count) { return (count % 2 === 0) ? genSpeedMatch(b) : genSpeedCompare(b); },
+    Gv: function (b, used, count) { return (count % 2 === 0) ? genRotation(b) : genOddOne(b); }
+  };
+
+  /**
+   * Genera un ítem del dominio pedido cerca de la dificultad objetivo.
+   * @param {string} domain
+   * @param {number} targetB
+   * @param {string[]} usedIds  ids ya administrados (para no repetir banco fijo)
+   * @param {number} domainCount  cuántos ítems de ese dominio ya se aplicaron
+   */
+  function generate(domain, targetB, usedIds, domainCount) {
+    var gen = DOMAIN_GENERATORS[domain];
+    var item = gen(targetB, usedIds || [], domainCount || 0);
+    return item;
+  }
+
+  global.ITEMBANK = {
+    generate: generate,
+    GC_BANK: GC_BANK,
+    DOMAINS: ['Gf', 'Gc', 'Gwm', 'Gs', 'Gv'],
+    _test: { genMatrix: genMatrix, genSequence: genSequence, genVerbal: genVerbal, genDigitSpan: genDigitSpan, genCorsi: genCorsi, genArithmetic: genArithmetic, genSpeedMatch: genSpeedMatch, genSpeedCompare: genSpeedCompare, genRotation: genRotation, genOddOne: genOddOne }
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
